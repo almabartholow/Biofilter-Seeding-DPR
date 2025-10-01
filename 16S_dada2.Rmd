@@ -1,0 +1,474 @@
+---
+title: "16S Analysis"
+output: html_notebook
+---
+# DADA2
+## Load Libraries
+
+```{r}
+library("dada2")
+library("phyloseq")
+library("ggplot2")
+library(repr)
+library('dplyr')
+library('tibble')
+library(Biostrings)
+library(ShortRead)
+library(DECIPHER) ; packageVersion("DECIPHER")
+```
+
+
+## Read in names
+
+```{r}
+path <- "C:/Users/almab/16S" # CHANGE ME to the directory containing the fastq files after unzipping.
+
+setwd(path)
+```
+
+```{r}
+
+fnFs <- sort(list.files(path, pattern="_R1_001.fastq",full.names = TRUE)) 
+fnRs <- sort(list.files(path, pattern="_R2_001.fastq",full.names = TRUE)) # CHANGE if different file extensions
+
+```
+
+
+```{r}
+sample.names <- sapply(strsplit(basename(fnFs), "_S"), `[`,1)
+sample.names
+```
+
+
+## Inspect read quality profiles
+
+```{r}
+#setwd(path)
+#plotQualityProfile(fnFs2[1:4])
+
+#plotQualityProfile(fnFs2[1:1])+ xlim(0,25) + geom_hline(aes(yintercept=30)) #trimleft 5 first bp
+plotQualityProfile(fnFs2[4:4])+ xlim(250,300) + geom_hline(aes(yintercept=30))  #trimright 275 
+
+
+#plotQualityProfile(fnRs2[1:1])+ xlim(0,25) + geom_hline(aes(yintercept=30))  #trimleft first 5bp
+#plotQualityProfile(fnRs2[4:4])+ xlim(150,250) + geom_hline(aes(yintercept=30))  #trimright 200? 
+
+```
+
+## Trim and Filtering Reads
+
+```{r}
+# Trim and Filtering Reads
+#reverse and forward reads
+#filterAndTrim(file.path(path,fnFs), file.path(filtpath,fnFs), file.path(path,fnRs), file.path(filtpath,fnRs),
+#              truncLen=c(275,200), trimLeft= 5, maxEE=1, truncQ=10, minLen= 200 ,  n = 1e+05, rm.phix=TRUE, compress=TRUE, verbose=TRUE, multithread =FALSE)
+
+
+```
+
+```{r}
+
+filtFs <- file.path(path, "filtered_new", paste0(sample.names, "_F_filt.fastq.gz"))
+
+names(filtFs) <- sample.names
+
+```
+
+
+```{r}
+
+# trying this again with only forward reads because reverse too messy
+out <- filterAndTrim(fnFs,  filtFs, 
+              truncLen=250, trimLeft= 5, maxEE=1, truncQ=10, minLen= 200 , n = 1e+05, rm.phix=TRUE, compress=TRUE, verbose=TRUE, multithread =FALSE)
+
+#going forward with forward :)
+```
+
+```{r}
+filtFs <- file.path(path, "filtered")
+filtRs <- file.path(path, "filtered")
+names(filtFs) <- sample.names
+names(filtRs) <- sample.names
+```
+
+```{r}
+
+
+# Filtering
+filterAndTrim(fnRs, filtRs,  compress = TRUE,
+  truncQ = 10, truncLen = 220, trimLeft = 5,
+  minLen = 200, maxN = 0, minQ = 0, maxEE = 1, rm.phix = TRUE,
+  n = 1e+05, verbose=TRUE, multithread =FALSE)
+```
+
+
+
+## Learn the error rates
+
+
+
+
+
+```{r}
+
+#errF <- learnErrors(file.path(filtpath,fnFs), nbases = 1e9, #multithread=TRUE) 
+errF <- learnErrors(filtFs, nbases = 1e9, multithread=TRUE)
+## include nbases = 1e9  when doing full set
+```
+
+```{r}
+filts <- list.files(filtpath, pattern="_F_filt.fastq.gz", full.names=TRUE)
+#sample.names <- sapply(strsplit(basename(fnFs), "_S"), `[`,1)
+names(filts) <- sample.names
+
+sample.names
+```
+
+
+```{r}
+plotErrors(errF, nominalQ=TRUE)
+
+```
+
+
+
+
+## Sample Inference
+
+```{r}
+# Infer sequence variants
+dds <- vector("list", length(sample.names))
+names(dds) <- sample.names
+for(sam in sample.names) {
+  cat("Processing:", sam, "\n")
+  derep <- derepFastq(filts[[sam]])
+  dds[[sam]] <- dada(derep, err=errF, multithread=TRUE)
+}
+```
+
+
+## Construct sequence table
+
+```{r}
+seqtab <- makeSequenceTable(dds)
+saveRDS(seqtab, "C:\\Users\\almab\\16S\\subset\\seqtabn1e9.rds") # CHANGE ME to where you want sequence table saved
+
+```
+
+```{r}
+dim(seqtab)
+```
+## Remove Chimeras
+```{r}
+seqtab.nochim <- removeBimeraDenovo(seqtab, method="consensus", multithread=TRUE, verbose=TRUE)
+dim(seqtab.nochim)
+```
+
+```{r}
+sum(seqtab.nochim)/sum(seqtab)
+
+```
+
+
+```{r}
+# investigate the percent of total reads that were chimeric
+reads_filtered <- as.data.frame(rowSums(seqtab))
+colnames(reads_filtered) <- 'reads_filtered'
+reads_nochim <- as.data.frame(rowSums(seqtab.nochim))
+colnames(reads_nochim) <- 'reads_nochim'
+stats <- merge(reads_filtered, reads_nochim, by=0)
+stats$percent_chim <- 100 * (stats$reads_filtered - stats$reads_nochim) / stats$reads_filtered
+tail(stats[order(stats$percent_chim), ])
+ggplot(stats, aes(x=percent_chim))+
+    geom_histogram(binwidth=2.5)
+```
+
+## Track Reads through pipeline
+```{r}
+getN <- function(x) sum(getUniques(x))
+track <- cbind(out, sapply(dds, getN), rowSums(seqtab.nochim))
+# If processing a single sample, remove the sapply calls: e.g. replace sapply(dadaFs, getN) with getN(dadaFs)
+colnames(track) <- c("input", "filtered", "denoisedF",  "nonchim")
+rownames(track) <- sample.names
+head(track)
+```
+## Clustering
+
+```{r}
+set.seed(123)
+```
+
+
+```{r}
+seqtab <- readRDS("C:/Users/almab/16S/seqtab_finaln1e9.rds")
+```
+
+```{r}
+asv_sequences <- colnames(seqtab)
+sample_names <- rownames(seqtab)
+dna <- Biostrings::DNAStringSet(asv_sequences)
+```
+
+```{r}
+aa <- translate(dna)
+aa
+seqs <- aa # could also cluster the nucleotides
+length(seqs)
+
+```
+
+```{r}
+clusters <- Clusterize(seqs, cutoff=seq(0.5, 0, -0.1), processors=1)
+class(clusters)
+colnames(clusters)
+str(clusters)
+apply(clusters, 2, max) # number of clusters per cutoff
+apply(clusters, 2, function(x) which.max(table(x))) # max sizes
+
+```
+```{r}
+o <- order(clusters[[2]], width(seqs), decreasing=TRUE) # 40% cutoff
+o <- o[!duplicated(clusters[[2]])]
+aa[o]
+dna[o]
+```
+```{r}
+t <- table(clusters[[1]]) # select the clusters at a cutoff
+t <- sort(t, decreasing=TRUE)
+head(t)
+w <- which(clusters[[1]] == names(t[1]))
+AlignSeqs(seqs[w], verbose=FALSE)
+
+```
+```{r}
+#aligned_seqs <- AlignSeqs(seqs, verbose=FALSE)
+#d <- DistanceMatrix(aligned_seqs, verbose=FALSE)
+#tree <- TreeLine(myDistMatrix=d, method="UPGMA", verbose=FALSE)
+heatmap(as.matrix(clusters), scale="column", Colv=NA, Rowv=tree)
+
+```
+
+```{r}
+c1 <- Clusterize(seqs, cutoff=0.01,  processors=1)
+#w <- which(c1 < 0 & !duplicated(c1))
+```
+
+
+```{r}
+nproc <- 4 # set to number of cpus/processors to use for the clustering
+```
+
+```{r}
+aln <- DECIPHER::AlignSeqs(dna, processors = nproc)
+d <- DECIPHER::DistanceMatrix(aln, processors = nproc)
+clusters <- DECIPHER::TreeLine(
+  myDistMatrix=d, 
+  method = "complete",
+  cutoff = 0.01, # use `cutoff = 0.01` for a 99% OTU 
+  processors = nproc)
+
+```
+
+
+```{r}
+## Use dplyr to merge the columns of the seqtab matrix for ASVs in the same OTU
+# prep by adding sequences to the `clusters` data frame
+clusters <- c1 %>%
+  add_column(sequence = asv_sequences)
+
+merged_seqtab <- seqtab %>% 
+  t %>%
+  rowsum(clusters$cluster) 
+# Optional renaming of clusters to OTU<cluster #>
+#colnames(merged_seqtab) <- paste0("OTU", colnames(merged_seqtab))
+```
+
+```{r}
+seqtab_m<- merge(merged_seqtab, clusters, by.x=0, by.y='cluster')
+row.names(seqtab_m)<- seqtab_m$sequence 
+seqtab_m <- seqtab_m %>% select(-Row.names) %>% t
+```
+
+
+
+## Assign Taxonomy
+
+```{r}
+tax <- assignTaxonomy(seqtab_m, "C:\\Users\\almab\\16S\\subset\\silva_nr99_v138.1_train_set.fa.gz", multithread=TRUE)
+```
+
+
+```{r}
+taxa.print <- tax # Removing sequence rownames for display only
+rownames(taxa.print) <- NULL
+head(taxa.print)
+```
+
+
+
+```{r}
+# Write to disk
+saveRDS(seqtab.nochim, "C:\\Users\\almab\\16S\\seqtab.rds")
+saveRDS(tax, "C:\\Users\\almab\\16S\\tax.rds")
+```
+
+## Evaluate Accuracy
+```{r}
+unqs.mock <- as.data.frame(seqtab_m) %>% filter(row.names(seqtab_m) %in% c("mock10_082523_1","mock10_082523_2","mock8_082523_1","mock8_082523_2","mock6_082523_1","mock6_082523_2")) 
+unqs.mock <-  as.data.frame(lapply(unqs.mock,as.numeric))
+unqs.mock <- unqs.mock %>% select_if(colSums(.) >0)
+
+
+#unqs.mock <- as.data.frame(seqtab_m[c("mock10_082523_1","mock10_082523_2","mock8_082523_1","mock8_082523_2","mock6_082523_1","mock6_082523_2"),])
+#unqs.mock <- sort(unqs.mock[unqs.mock>0], decreasing=TRUE)  # Drop ASVs absent in the Mock
+cat("DADA2 inferred", length(unqs.mock), "sample sequences present in the Mock community.\n")
+```
+
+```{r}
+mock.ref <- getSequences("C:\\Users\\almab\\16S\\subset\\ZymoBIOMICS.STD.refseq.v2\\ssrRNAs")
+
+match.ref <- sum(sapply(names(unqs.mock), function(x) any(grepl(x, mock.ref))))
+cat("Of those,", sum(match.ref), "were exact matches to the expected reference sequences.\n")
+```
+
+
+
+## Make Phyloseq object
+
+```{r}
+tax <- readRDS('C:\\Users\\almab\\16S\\tax_finaln1e9.rds')
+seqtab.nochim <- readRDS('C:\\Users\\almab\\16S\\seqtab_finaln1e9.rds')
+
+metadata<- read.csv('C:\\Users\\almab\\16S\\metadata.csv', header=TRUE, row.names = 1)
+```
+
+```{r}
+sum(is.na(tax[,"Genus"]))
+sum(!is.na(tax[,"Genus"]))
+sum(is.na(tax[,"Genus"]))/(sum(!is.na(tax[,"Genus"]))+sum(is.na(tax[,"Genus"])))
+
+```
+
+
+```{r}
+theme_set(theme_bw())
+
+```
+
+```{r}
+# Make data frame 
+#samples.out <- rownames(seqtab.nochim)
+#subject <- sapply(strsplit(samples.out, "D"), `[`,1)
+#sample_type <- sapply(strsplit(samples.out, "_"), `[`,1)
+#subject <- substr(subject,2,999)
+#day <- sapply(strsplit(samples.out, "_"), `[`,2)
+#samdf <- data.frame(Subject=subject, Sample_type=sample_type, Day=day)
+#samdf$When <- "Early"
+#samdf$When[samdf$Day>100] <- "Late"
+#rownames(samdf) <- samples.out
+```
+
+```{r}
+#construct a phyloseq object
+ps <- phyloseq(otu_table(seqtab.nochim, taxa_are_rows=FALSE), 
+               sample_data(metadata), 
+               tax_table(tax))
+#ps <- prune_samples(sample_names(ps) != "Mock", ps) # Remove mock sample
+```
+
+
+
+
+```{r}
+# new names
+dna <- Biostrings::DNAStringSet(taxa_names(ps))
+names(dna) <- taxa_names(ps)
+ps <- merge_phyloseq(ps, dna)
+taxa_names(ps) <- paste0("ASV", seq(ntaxa(ps)))
+ps
+```
+
+```{r}
+saveRDS(ps, "C:/Users/almab/ps_raw_from_dada2_new.rds")
+```
+
+
+## Check primers removed
+
+
+```{r}
+allOrients <- function(primer) {
+    # Create all orientations of the input sequence
+    require(Biostrings)
+    dna <- DNAString(primer)  # The Biostrings works w/ DNAString objects rather than character vectors
+    orients <- c(Forward = dna, Complement = Biostrings::complement(dna), Reverse = Biostrings::reverse(dna),
+        RevComp = Biostrings::reverseComplement(dna))
+    return(sapply(orients, toString))  # Convert back to character vector
+}
+```
+
+
+```{r}
+fnFs.filtN <- file.path(path, "filtN", basename(fnFs)) # Put N-filtered files in filtN/ subdirectory
+fnRs.filtN <- file.path(path, "filtN", basename(fnRs))
+filterAndTrim(fnFs, fnFs.filtN, fnRs, fnRs.filtN, maxN = 0, multithread = TRUE)
+```
+
+```{r}
+FWD <- 'TATGGTAATTGTGTGCCAGCMGCCGCGGTAA' #metadata$barcode_forward # $barcode_forward 
+REV <- 'AGTCAGTCAGCCGGACTACHVGGGTWTCTAAT' #metadata$barcode_reverse
+```
+
+```{r}
+FWD.orients <- allOrients(FWD)
+REV.orients <- allOrients(REV)
+FWD.orients
+```
+```{r}
+primerHits <- function(primer, fn) {
+    # Counts number of reads in which the primer is found
+    nhits <- vcountPattern(primer, sread(readFastq(fn)), fixed = FALSE)
+    return(sum(nhits > 0))
+}
+```
+
+
+```{r}
+
+rbind(FWD.ForwardReads = sapply(FWD.orients, primerHits, fn = fnFs.filtN[[1]]), FWD.ReverseReads = sapply(FWD.orients,
+    primerHits, fn = fnRs.filtN[[1]]), REV.ForwardReads = sapply(REV.orients, primerHits,
+    fn = fnFs.filtN[[1]]), REV.ReverseReads = sapply(REV.orients, primerHits, fn = fnRs.filtN[[1]]))
+
+```
+
+
+## Plots
+```{r}
+# Alpha Diversity
+plot_richness(ps , x="Day", measures=c("Shannon", "Simpson"), color="Sample_type")
+
+# from github: Other measures of diversity that aren't totally reliant on singletons, eg. Shannon/Simpson, are valid to use, and you can ignore the warning in phyloseq when calculating those measures.
+```
+
+```{r}
+# Ordinate 
+# Transform data to proportions as appropriate for Bray-Curtis distances
+ps.prop <- transform_sample_counts(ps, function(otu) otu/sum(otu))
+ord.nmds.bray <- ordinate(ps.prop, method="NMDS", distance="bray")
+```
+
+```{r}
+plot_ordination(ps.prop, ord.nmds.bray, color="Sample_type", title="Bray NMDS")
+
+```
+
+```{r}
+# Bar Chart
+top50 <- names(sort(taxa_sums(ps), decreasing=TRUE))[1:50]
+ps.top50 <- transform_sample_counts(ps, function(OTU) OTU/sum(OTU))
+ps.top50 <- prune_taxa(top50, ps.top50)
+plot_bar(ps.top50, x="Day", fill="Family") + facet_wrap(~Sample_type, scales="free_x")
+```
+
+
+
