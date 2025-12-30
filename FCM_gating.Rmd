@@ -1,0 +1,256 @@
+---
+title: "FCM Analysis"
+output: pdf_notebook
+---
+
+1. Install packages
+```{r}
+# BiocManager for installation
+install.packages("BiocManager")
+ 
+```
+
+```{r}
+library(BiocManager)
+```
+
+```{r}
+source("https://bioconductor.org/biocLite.R")
+
+```
+
+```{r}
+install.packages("devtools")
+library(devtools)
+```
+
+```{r}
+# Install Phenoflow fingerprinting package from github
+install_github("rprops/Phenoflow_package")
+```
+
+2. Load Packages
+```{r}
+library("flowCore")
+library("flowFDA")
+library("flowClean")
+library("Phenoflow")
+library("flowViz") 
+library("flowAI")
+library("flowFP")
+library("ggplot2") 
+library("dplyr")
+library("scales")
+library(tidyverse)
+library(lattice)
+
+```
+
+```{r}
+# Settings for plots
+require(RColorBrewer)
+myColors <- brewer.pal(6,"Blues")
+my.settings <- list(
+  strip.background=list(col="transparent",cex =1),
+  strip.border=list(col="transparent", cex=5),
+  panel.background=list(col="white"),
+  background=list(col="white"),
+  axis.line =list(col="black")
+)
+```
+
+```{r}
+# Set seed for reproducible analysis
+set.seed(777)
+dpi=300
+```
+
+3. Load dataset
+```{r}
+# Set working directory
+## Make Sure to change this
+setwd("C:/Users/almab/FCM")
+
+# Load data
+datapath <- c("Samples")
+fcsfiles <- list.files(path=datapath,recursive=TRUE,pattern=".fcs",full.names=TRUE)
+flowData <- read.flowSet(files = fcsfiles, transformation = FALSE, truncate_max_range = FALSE)
+
+```
+
+
+4. Metadata
+```{r}
+# Extract date from sample data
+sample_dates <- data.frame(keyword(flowData,"$DATE"))
+
+# Extract metadata from sample names (remove first and last characters)
+sample_data <- paste0(sample_dates$X.DATE," ",substring(flowCore::sampleNames(flowData), 1, nchar(flowCore::sampleNames(flowData))-2))
+
+# Remove end sequences (.fcs)
+sample_data <- gsub(".fcs","",sample_data)
+sample_data <- gsub(".f","",sample_data)
+
+# Change spaces into underscores
+sample_data <- gsub(" ","_",sample_data)
+
+# Change samplenames in flowData object
+flowCore::sampleNames(flowData) <- sample_data
+metadata <- data.frame(do.call(rbind, lapply(strsplit(flowCore::sampleNames(flowData),"_"), rbind)))
+colnames(metadata) <- c("Date","Location","Stain","Replicate")
+metadata$Sample <- sample_data
+
+```
+
+
+5. Transformation
+
+```{r}
+flowData_transformed <- transform(flowData,`FITC-A`=asinh(`FITC-A`), 
+                                  `SSC-A`=asinh(`SSC-A`), 
+                                  `PerCP-Cy5-5-A`=asinh(`PerCP-Cy5-5-A`), 
+                                  `FSC-A`=asinh(`FSC-A`))
+param=c("FITC-A", "PerCP-Cy5-5-A","SSC-A","FSC-A")
+
+```
+
+6. Denoising (gating)
+```{r}
+# Gating - specific to your data 
+
+sqrcut3 <- matrix(c(8.2,8.2,14,14,0,10.5,14.5,0),ncol=2, nrow=4)
+colnames(sqrcut3) <- c("FITC-A","PerCP-Cy5-5-A")
+std_gate <- polygonGate(.gate=sqrcut3, filterId = "Total Cells")
+
+# Jorien's 
+# 8.2,8.2,16,16,0,6.5,14.5,0
+# Original I tried
+# 8.2,8.2,14,14,0,10.5,14.5,0
+```
+
+
+
+6a. Check Quality of Gating
+
+
+```{r}
+# Oct 27 Gate
+# 201:297
+xyplot(`PerCP-Cy5-5-A` ~ `FITC-A`, data=flowData_transformed[c(237:242)],
+       filter= std_gate,
+       scales=list(y=list(limits=c(1,17)), x=list(limits=c(1,17))),
+       xaxt='n', yaxt='n',
+       nbin=125, xlab = " Green fluorescence intensity [A.U.]", ylab = 'Red fluorescence intensity [A.U.]',
+       par.strip.text=list(col="black", font=3, cex=1), smooth=FALSE,
+       par.settings=my.settings
+       )
+
+#Blank 285:290
+
+```
+
+```{r}
+# Oct 13 Gate
+# 104:200
+xyplot(`PerCP-Cy5-5-A` ~ `FITC-A`, data=flowData_transformed[c(195:200)],
+       filter= std_gate,
+       scales=list(y=list(limits=c(1,17)), x=list(limits=c(1,17))),
+       xaxt='n', yaxt='n',
+       nbin=125, xlab = " Green fluorescence intensity [A.U.]", ylab = 'Red fluorescence intensity [A.U.]',
+       par.strip.text=list(col="black", font=3, cex=1), smooth=FALSE,
+       par.settings=my.settings
+       )
+
+# Blanks: 188:193
+
+```
+
+```{r}
+# Jan 12 Gate
+# 1:103
+xyplot(`PerCP-Cy5-5-A` ~ `FITC-A`, data=flowData_transformed[c(98:103)],
+       filter= std_gate,
+       scales=list(y=list(limits=c(1,17)), x=list(limits=c(1,17))),
+       xaxt='n', yaxt='n',
+       nbin=125, xlab = " Green fluorescence intensity [A.U.]", ylab = 'Red fluorescence intensity [A.U.]',
+       par.strip.text=list(col="black", font=3, cex=1), smooth=FALSE,
+       par.settings=my.settings,
+)
+
+
+
+# Blanks: 85:91
+```
+
+
+```{r}
+# Nov 10 Gate
+# 298:394
+xyplot(`PerCP-Cy5-5-A` ~ `FITC-A`, data=flowData[c(298:303)],
+       filter= std_gate,
+       scales=list(y=list(limits=c(1000,140000)), x=list(limits=c(10,10000))),
+       xaxt='n', yaxt='n',
+       nbin=125, xlab = " Green fluorescence intensity [A.U.]", ylab = 'Red fluorescence intensity [A.U.]',
+       par.strip.text=list(col="black", font=3, cex=1), smooth=FALSE,
+       par.settings=my.settings
+       )
+
+#Blank 382:387
+```
+
+
+
+6b. Apply Gate
+```{r}
+# Cells per mL
+s <- flowCore::filter(flowData_transformed, std_gate)
+TotalCount <- summary(s);TotalCount <- toTable(TotalCount)
+TCC <- TotalCount[,c(1,5)]
+TCC$dens <- TCC$true/50*1000
+
+colnames(TCC) <- c("Sample","TCC_count","TCC_density") 
+
+# Add to metadata
+metadata.counts <- full_join(metadata,TCC, by = "Sample") 
+```
+
+```{r}
+# Only do this once 
+meta_combo <- metadata.counts
+
+# Change date format
+meta_combo$Date = as.Date(meta_combo$Date, format = "%d-%b-%Y")
+
+```
+
+# After this point is data manipulation and analysis
+
+```{r}
+write.csv(meta_combo,"std_gate.csv" )
+
+# I preferred to work in the new ATP_FCM_Analysis.ipynb file for data manipulation and analysis
+```
+
+
+```{r}
+# Adding means and sd 
+New_meta <- meta_combo %>% dplyr::filter(Location != "Count") %>%  reshape(timevar =  "Replicate", v.names = "TCC_density", idvar=c("Date","Location","Stain"), direction="wide") 
+New_meta <- New_meta %>% dplyr::mutate(geomean = apply(New_meta[,c(6:8)], 1, function(x) exp(mean(log(x))))) %>% dplyr::mutate(geosd = apply(New_meta[,c(6:8)], 1, function(x) exp(sd(log(x))))) %>% dplyr::select(-c(6:8))
+
+```
+
+```{r}
+#Subtracting Blanks
+meta_blanked <- New_meta %>% group_by(Date,Stain) %>% mutate(geomean = geomean- geomean[Location == "Blk"]) %>% filter(Location != "Blk")
+```
+
+
+```{r}
+#Add Sample Type
+meta_bulk <- meta_blanked %>% filter(Location %in% c("AR1","AR2","AR3","AR4","AR5","AR6","Tap","RAR","BFE")) %>% mutate(sample_type="Bulk")
+meta_BF <- meta_blanked %>% filter(Location %in% c("BF1","BF2","BF3","BF4","BF5","BF6","BAC")) %>% filter(Date !="2022-09-29") %>% mutate(sample_type="Biofilm") 
+meta_type <- rbind(meta_bulk, meta_BF)
+
+```
+
+
